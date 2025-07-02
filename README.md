@@ -42,8 +42,12 @@ To ensure the final output respects the room's geometry, the inference process u
 
 Ensure you have the necessary libraries installed from `requirements.txt`.
 
-The entire workflow, from data preparation to training and inference, is orchestrated by the `test.sh` script. Please refer to this file for the exact commands and execution order. It is the single source of truth for running the project.
+```bash
+pip install uv
+uv pip install -r requirements.txt
+```
 
+The entire workflow, from data preparation to training and inference, is orchestrated by the `test.sh` script. Please refer to this file for the exact commands and execution order. 
 ## Results
 <p align="center">
     <img src="figs/output.png" alt="Virtual Staging Output" width="600"><br>
