@@ -1,110 +1,47 @@
-# Virtual Staging with Stable Diffusion
+# Virtual Staging
 
-This project demonstrates how to perform virtual staging on empty rooms using Stable Diffusion and ControlNet. The goal is to generate realistic staged photos while preserving the structural integrity of the original room.
+This project performs virtual staging on empty room images using a sophisticated pipeline of generative AI models. The core goal is to generate high-quality, realistic staged photos while strictly preserving the structural integrity and 3D geometry of the original empty room.
 
 ## Approach
 
-The pipeline uses a two-phase training strategy:
+The architecture is built on a synergistic pipeline of state-of-the-art models, each chosen for its specific strengths. The training and inference processes are designed to be robust and produce geometrically consistent results.
 
-1. **Unpaired Pre-training:** Fine-tunes a ControlNet model on a dataset of staged images to learn realistic furniture styles and compositions, independent of specific room layouts.
-2. **Paired Fine-tuning:** Further fine-tunes the model on a dataset of empty rooms paired with their staged counterparts. This phase teaches the model to preserve the original room's structure (walls, windows, lighting) while in-painting the furniture learned in the first phase, guided by text prompts.
+### 1. Data Preparation: The "Grounding" Pipeline
 
-The data preparation uses stable and reliable models (BLIP for captions, MaskFormer for segmentation) to create the necessary training data.
+To create high-quality training data, we avoid brittle segmentation techniques. Instead, we use a "grounding" pipeline that leverages the contextual understanding of a large multimodal model (Florence-2) to guide a powerful segmentation model (SAMv2).
 
-## Setup
+1. **Captioning:** Florence-2 generates a rich, descriptive caption for a staged image.
+2. **Phrase Grounding:** The image and its own caption are fed back into Florence-2. The model identifies and provides precise bounding boxes for the objects it just described (e.g., a box for "the grey sofa").
+3. **Guided Segmentation:** These high-confidence bounding boxes are passed to SAMv2, which generates perfect, pixel-level masks for only those objects.
 
-Ensure you have the necessary libraries installed. The `requirements.txt` file in this repository lists all dependencies.
+This process is fast, accurate, and semantically aware, producing superior training data.
 
-## Workflow
+### 2. Training Strategy: Two-Phase Learning
 
-The process is divided into three main stages: Data Preparation, Training, and Inference.
+We use a two-phase training strategy to teach the ControlNet model two distinct skills in sequence:
 
-### 1. Data Preparation
+1. **Unpaired Pre-training (Art School):** The model is first trained on a large dataset of *staged* images. Its task is to re-create the furniture within masked-out regions of these images. This teaches the model a rich visual vocabulary of what high-quality furniture, lighting, and textures look like, independent of any specific room.
+2. **Paired Fine-tuning (The Client Project):** The pre-trained model is then fine-tuned on our `paired` dataset (empty room vs. staged room). This teaches the model the specific skill of applying its stylistic knowledge while strictly preserving the walls, windows, and lighting of the original empty room.
 
-This stage processes the raw image data into formats suitable for training. It involves:
+### 3. Inference: The "Structural Integrity" Pipeline
 
-* Generating captions for staged images.
-* Segmenting furniture from staged images to create layout masks.
-* Creating "agnostic" images by masking furniture in empty rooms.
-* Splitting data into training and validation sets.
+To ensure the final output respects the room's geometry, the inference process uses a multi-ControlNet guidance system.
 
-**Commands:**
+1. **Structural Analysis:** The input empty room is analyzed to produce a **Canny edge map** (for sharp lines) and a **Depth map** (for 3D geometry).
+2. **Triple-ControlNet Guidance:** When generating a "pseudo-staged" image for layout, we use three ControlNets simultaneously: our fine-tuned **Inpaint** model (for style), the **Canny** model (for structure), and the **Depth** model (for 3D perspective). This creates a strong structural scaffold that prevents hallucinations like trees growing from walls.
+3. **Final Inpainting:** The high-quality pseudo-image is then used with the "Grounding" pipeline to generate a precise mask, which guides the final, high-resolution inpainting pass.
 
-1. **Set environment variables (replace paths accordingly):**
+## Setup & Workflow
 
-    ```bash
-    export PAIRED_DATA_DIR="/kaggle/input/roomsdataset/500_empty_staged_384px"
-    export UNPAIRED_DATA_DIR="/kaggle/input/roomsdataset/unpaired_384px"
-    export PROCESSED_DATA_DIR="/kaggle/working/processed_data"
-    ```
+Ensure you have the necessary libraries installed from `requirements.txt`.
 
-2. **Create output directory and clean up previous runs:**
+The entire workflow, from data preparation to training and inference, is orchestrated by the `test.sh` script. Please refer to this file for the exact commands and execution order. It is the single source of truth for running the project.
 
-    ```bash
-    rm -rf $PROCESSED_DATA_DIR
-    mkdir -p $PROCESSED_DATA_DIR
-    ```
+## Outlook & Future Work
 
-3. **Run the data preparation script:**
+This project serves as a robust proof-of-concept. Areas for future improvement include:
 
-    ```bash
-    python prepare_data.py --paired_dir $PAIRED_DATA_DIR --output_dir $PROCESSED_DATA_DIR --unpaired_dir $UNPAIRED_DATA_DIR
-    ```
-
-    This script will create `paired_train_datalist.json`, `paired_eval_datalist.json`, and `unpaired_train_datalist.json` in your output directory.
-
-### 2. Training
-
-This stage fine-tunes the ControlNet model. It consists of two phases: unpaired pre-training and paired fine-tuning.
-
-**Commands:**
-
-1. **Ensure `requirements.txt` is up-to-date:**
-    * Make sure `torch==2.3.0` and `xformers==0.0.26.post1` are installed.
-    * Run: `pip install -r requirements.txt`
-
-2. **Run the training script (distributed across 2 GPUs):**
-
-    ```bash
-    torchrun --nproc_per_node=2 train.py \
-        --data_dir $PROCESSED_DATA_DIR \
-        --output_dir "/kaggle/working/models" \
-        --batch_size 1 \
-        --pretrain_epochs 15 \
-        --finetune_epochs 10 \
-        --pretrain_lr 5e-6 \
-        --finetune_lr 1e-6
-    ```
-
-    This command will perform the two-phase training and save the final model to `/kaggle/working/models/final_controlnet`.
-
-### 3. Inference
-
-Once the model is trained, you can use it to stage new, empty room images.
-
-**Commands:**
-
-1. **Run the inference script:**
-
-    ```bash
-    python inference.py \
-        --controlnet_path "/kaggle/working/models/final_controlnet" \
-        --input_image "/path/to/your/empty_room_image.png" \
-        --output_dir "/kaggle/working/inference_output" \
-        --prompt "A modern, minimalist living room with a white sofa, a glass coffee table, and a tall green plant. Natural light from a large window." \
-        --seed 1234
-    ```
-
-    * Replace `/path/to/your/empty_room_image.png` with the actual path to your input image.
-    * Adjust the `--prompt` to describe your desired staging.
-    * The output images will be saved in `/kaggle/working/inference_output`.
-
-## Limitations & Outlook
-
-This project serves as a proof-of-concept. Areas for improvement include:
-
-* [ ] More sophisticated prompt engineering for style control  
-* [ ] Handling existing furniture in input images  
-* [ ] Finer control over object placement and style  
-* [ ] More robust error handling and logging  
-* [ ] Potentially exploring faster or more memory-efficient model architectures  
+* [ ] **Scaling to High Resolution:** The current models (SD 1.5 at 512x512) are excellent for experimentation. The next step is to adapt the pipeline for modern, highser-resolution models like SDXL to produce production-quality images.
+* [ ] **User Interface (UI):** Developing a Gradio or web-based UI to make the tool accessible to non-technical users (e.g., real estate agents) for easy image upload and prompt entry.
+* [ ] **Advanced Style Control:** Finer control over object placement, style blending, and negative object constraints (e.g., "add a sofa but no lamps").
+* [ ] **Handling Partially Furnished Rooms:** Extending the logic to intelligently add or replace furniture in rooms that are not completely empty.
