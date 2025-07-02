@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader
 from diffusers import StableDiffusionControlNetInpaintPipeline, ControlNetModel, DDPMScheduler
 from pytorch_lightning.callbacks import ModelCheckpoint
 import argparse
-import shutil
 import gc
 
 from dataset import VirtualStagingDataset
@@ -20,6 +19,7 @@ def set_seed(seed: int = 42) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    pl.seed_everything(seed, workers=True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
@@ -117,7 +117,6 @@ def run_pretraining(args, model_name: str, base_controlnet_path: str) -> str:
         default_root_dir=os.path.join(args.output_dir, "pretrain_logs"),
         enable_checkpointing=False,
         logger=False,
-        seed_everything=args.seed if args.seed is not None else 42,
     )
     pretrain_trainer.fit(pretrain_model, unpaired_dataloader)
 
@@ -164,7 +163,6 @@ def run_finetuning(args, model_name: str, controlnet_path: str) -> None:
         precision="16-mixed", max_epochs=args.finetune_epochs,
         callbacks=[checkpoint_callback],
         default_root_dir=os.path.join(args.output_dir, "finetune_logs"),
-        seed_everything=args.seed if args.seed is not None else 42,
     )
     finetune_trainer.fit(finetune_model, paired_dataloader)
 
