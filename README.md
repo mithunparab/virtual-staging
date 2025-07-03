@@ -1,64 +1,66 @@
-# Virtual Staging using Stable Diffusion ControlNet
+# Virtual Staging
 
-This project performs virtual staging on empty room images using a sophisticated pipeline of generative AI models. The core goal is to generate high-quality, realistic staged photos while strictly preserving the structural integrity and 3D geometry of the original empty room.
+This project leverages a powerful pipeline of generative AI models to perform virtual staging on empty room images. The primary goal is to create high-quality, photorealistic staged interior designs while meticulously preserving the original room's structural integrity and 3D geometry.
 
 ## Approach
 
-The architecture is built on a synergistic pipeline of state-of-the-art models, each chosen for its specific strengths. The training and inference processes are designed to be robust and produce geometrically consistent results.
+Our approach is built around a synergistic, multi-stage process, where each component is chosen for its specific strengths in achieving geometrically accurate and aesthetically pleasing results.
 
 <div style="display: flex; align-items: center; gap: 10px;">
     <a href="https://www.kaggle.com/code/mithunparab/virtual-staging-stable-diffusion" target="_blank">
         <img src="https://kaggle.com/static/images/site-logo.png" alt="Kaggle Notebook" height="40" style="margin-bottom: -15px;">
     </a>
-    
 </div>
 
-### 1. Data Preparation: The "Grounding" Pipeline
+### 1. Data Preparation: High-Quality Mask Generation
 
-To create high-quality training data, we avoid brittle segmentation techniques. Instead, we use a "grounding" pipeline that leverages the contextual understanding of a large multimodal model (Florence-2) to guide a powerful segmentation model (SAMv2).
+Creating accurate masks for training is crucial. We employ a robust pipeline that uses a state-of-the-art vision-language model (Grounding DINO) to guide a precise segmentation model (SAM).
 
-1. **Captioning:** Florence-2 generates a rich, descriptive caption for a staged image.
-2. **Phrase Grounding:** The image and its own caption are fed back into Florence-2. The model identifies and provides precise bounding boxes for the objects it just described (e.g., a box for "the grey sofa").
-3. **Guided Segmentation:** These high-confidence bounding boxes are passed to SAMv2, which generates perfect, pixel-level masks for only those objects.
+1.  **Creative Layout Generation:** A Stable Diffusion model, guided by Canny edges, depth maps, and your trained inpainting ControlNet, generates an initial "pseudo-staged" image. This creative step populates the room with furniture according to the prompt.
+2.  **Text-Guided Masking:** Grounding DINO, a specialized object detection model, is used to identify and locate objects (like sofas, tables, chairs) within the generated pseudo-staged image based on text prompts (e.g., "sofa . table . chair").
+3.  **Pixel-Perfect Segmentation:** The bounding boxes provided by Grounding DINO are then fed to SAM (Segment Anything Model), which generates precise, pixel-level masks for each detected object. These masks form the high-quality training data.
 
-This process is fast, accurate, and semantically aware, producing superior training data.
+### 2. Training Strategy: Two-Phase Learning for Control
 
-### 2. Training Strategy: Two-Phase Learning
+We use a two-phase training strategy to build a highly effective ControlNet:
 
-We use a two-phase training strategy to teach the ControlNet model two distinct skills in sequence:
+1.  **Unpaired Pre-training :** The ControlNet is first trained on a large dataset of *staged room images* (without paired empty rooms). This phase teaches the model a broad visual vocabulary of furniture styles, lighting, textures, and realistic interior aesthetics. It learns "what good staging looks like" in general.
+2.  **Paired Fine-tuning :** The pre-trained ControlNet is then fine-tuned on a dataset of *paired empty room and staged room images*. This phase teaches the model the critical skill of applying its learned artistic knowledge while strictly adhering to the structure, walls, windows, and lighting of the original empty room.
 
-1. **Unpaired Pre-training (Art School):** The model is first trained on a large dataset of *staged* images. Its task is to re-create the furniture within masked-out regions of these images. This teaches the model a rich visual vocabulary of what high-quality furniture, lighting, and textures look like, independent of any specific room.
-2. **Paired Fine-tuning (The Client Project):** The pre-trained model is then fine-tuned on our `paired` dataset (empty room vs. staged room). This teaches the model the specific skill of applying its stylistic knowledge while strictly preserving the walls, windows, and lighting of the original empty room.
+### 3. Inference: Single-Pass Structural Integrity
 
-### 3. Inference: The "Structural Integrity" Pipeline
+The inference process focuses on delivering a final, high-quality staged image directly, without intermediate unreliable steps.
 
-To ensure the final output respects the room's geometry, the inference process uses a multi-ControlNet guidance system.
-
-1. **Structural Analysis:** The input empty room is analyzed to produce a **Canny edge map** (for sharp lines) and a **Depth map** (for 3D geometry).
-2. **Triple-ControlNet Guidance:** When generating a "pseudo-staged" image for layout, we use three ControlNets simultaneously: our fine-tuned **Inpaint** model (for style), the **Canny** model (for structure), and the **Depth** model (for 3D perspective). This creates a strong structural scaffold that prevents hallucinations like trees growing from walls.
-3. **Final Inpainting:** The high-quality pseudo-image is then used with the "Grounding" pipeline to generate a precise mask, which guides the final, high-resolution inpainting pass.
+1.  **Structural Analysis:** The input empty room image is processed to extract a **Canny edge map** (preserving sharp lines like walls and windows) and a **Depth map** (preserving 3D geometry and perspective).
+2.  **Multi-ControlNet Guidance:** A single Stable Diffusion generation pass is performed using a powerful combination of ControlNets:
+    *   **Your Trained Inpainting ControlNet:** Used with the empty room image to inject the learned furniture styles and aesthetics.
+    *   **Canny ControlNet:** Used with the Canny edge map to enforce the room's existing lines.
+    *   **Depth ControlNet:** Used with the Depth map to ensure correct 3D layout and perspective.
+3.  **Targeted Inpainting:** A "staging area" mask, programmatically derived from the depth map (e.g., segmenting the floor), is used to guide the generation. This mask focuses the creative process precisely where furniture should appear, preventing unwanted changes to walls or ceilings and ensuring consistency.
 
 ## Setup & Workflow
-
-Ensure you have the necessary libraries installed from `requirements.txt`.
+Ensure you have the necessary libraries installed from `requirements.txt` and the GroundingDINO repository cloned with its weights checkout [setup-gdino-kaggle.sh](setup-gdino-kaggle.sh).
 
 ```bash
 pip install uv
 uv pip install -r requirements.txt
 ```
 
-The entire workflow, from data preparation to training and inference, is orchestrated by the `test.sh` script. Please refer to this file for the exact commands and execution order. 
+The entire workflow, from data preparation to training and inference, is orchestrated by the [test.sh](test.sh) script. Please refer to this file for the exact commands and execution order.
+
 ## Results
 <p align="center">
-    <img src="figs/output.png" alt="Virtual Staging Output" width="600"><br>
-    <em>Figure 1: Example of virtual staging output generated by the pipeline. The staged image preserves the original room's geometry while adding realistic furniture and decor.</em>
+    <img src="figs/output.png" alt="Virtual Staging Output 1" width="400"><br>
+    <img src="figs/output2.png" alt="Virtual Staging Output 2" width="400"><br>
+    <img src="figs/output3.png" alt="Virtual Staging Output 3" width="400"><br>
+    <em>Figure 1: Examples of virtual staging outputs. The staged images preserve the original room's geometry while creatively adding realistic furniture and decor based on text prompts.</em>
 </p>
 
 ## Outlook & Future Work
 
-This project serves as a robust proof-of-concept. Areas for future improvement include:
+This project provides a robust foundation. Areas for future development include:
 
-* [ ] **Scaling to High Resolution:** The current models (SD 1.5 at 512x512) are excellent for experimentation. The next step is to adapt the pipeline for modern, highser-resolution models like SDXL to produce production-quality images.
-* [ ] **User Interface (UI):** Developing a Gradio or web-based UI to make the tool accessible to non-technical users (e.g., real estate agents) for easy image upload and prompt entry.
-* [ ] **Advanced Style Control:** Finer control over object placement, style blending, and negative object constraints (e.g., "add a sofa but no lamps").
-* [ ] **Handling Partially Furnished Rooms:** Extending the logic to intelligently add or replace furniture in rooms that are not completely empty.
+*   [ ] **High-Resolution Scaling:** Adapt the pipeline for SDXL models (1024x1024) to achieve production-level image resolution.
+*   [ ] **User Interface (UI):** Develop a Gradio or web-based UI for easy use by non-technical users (e.g., real estate agents).
+*   [ ] **Advanced Control:** Implement finer control over object placement, style blending, and negative constraints (e.g., "no modern art").
+*   [ ] **Intelligent Masking:** Explore adaptive masking strategies that can better handle partially furnished rooms or more complex room layouts.

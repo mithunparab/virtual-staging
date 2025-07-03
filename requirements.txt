@@ -13,4 +13,7 @@ einops
 xformers==0.0.26.post1
 peft==0.10.0
 huggingface-hub==0.25.2
-ultralytics==8.2.2 # Ensures SAMv2 support
+groundingdino-py
+ultralytics==8.2.2
+addict
+yapf

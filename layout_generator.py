@@ -1,184 +1,213 @@
 import gc
+import os
 import numpy as np
 import cv2
 from PIL import Image
 import torch
-from transformers import AutoProcessor, AutoModelForCausalLM, dynamic_module_utils
 from ultralytics import SAM
-from unittest.mock import patch
-from typing import Union
-import os
-import traceback
+
+try:
+    from groundingdino.util.inference import load_model, predict
+    import groundingdino.datasets.transforms as T
+except ImportError:
+    print("Warning: GroundingDINO not found. Ensure it's cloned and PYTHONPATH is set.")
+    load_model, predict, T = None, None, None
+
+
+def box_cxcywh_to_xyxy(
+    x: torch.Tensor, width: int, height: int
+) -> torch.Tensor:
+    """
+    Convert bounding boxes from [center_x, center_y, width, height] (relative)
+    to [x1, y1, x2, y2] (absolute pixel values).
+
+    Args:
+        x: Bounding boxes in [cx, cy, w, h] format.
+        width: The original image width.
+        height: The original image height.
+
+    Returns:
+        Bounding boxes in [x1, y1, x2, y2] format.
+    """
+    if x.nelement() == 0:
+        return x
+    x_c, y_c, w, h = x.unbind(1)
+    b = [
+        (x_c - 0.5 * w),
+        (y_c - 0.5 * h),
+        (x_c + 0.5 * w),
+        (y_c + 0.5 * h)
+    ]
+    b = torch.stack(b, dim=1)
+    b[:, [0, 2]] *= width
+    b[:, [1, 3]] *= height
+    return b
+
 
 class SAMModel:
     """
-    Wrapper for the SAM model using the 'sam_l.pt' checkpoint for segmentation.
+    Wrapper for the SAM segmentation model.
     """
-    def __init__(self, device='cuda:0'):
+    def __init__(self, device: str = 'cuda:0') -> None:
+        """
+        Initialize the SAMModel.
+
+        Args:
+            device: Device to load the model on.
+        """
         self.device = device
         self.model = None
 
-    def load(self) -> None:
+    def load(self, model_path: str = 'sam_l.pt') -> None:
         """
-        Loads the SAM model onto the specified device.
+        Load the SAM model.
+
+        Args:
+            model_path: Path to the SAM model weights.
         """
-        print(f"Loading SAM model onto {self.device}...")
-        self.model = SAM('sam_l.pt').to(self.device)
+        print(f"Loading SAM model from {model_path} onto {self.device}...")
+        self.model = SAM(model_path).to(self.device)
         print("SAM model loaded.")
 
     def release(self) -> None:
         """
-        Releases the SAM model and clears GPU memory.
+        Release the SAM model and free resources.
         """
-        print("Releasing SAM model...")
-        del self.model
-        self.model = None
-        gc.collect()
-        torch.cuda.empty_cache()
+        if self.model is not None:
+            print("Releasing SAM model...")
+            del self.model
+            self.model = None
+            gc.collect()
+            torch.cuda.empty_cache()
 
-    def segment_from_boxes(self, image: Image.Image, bboxes: list) -> np.ndarray:
+    def segment_from_boxes(
+        self, image: Image.Image, bboxes: torch.Tensor
+    ) -> np.ndarray:
         """
-        Generates a segmentation mask from bounding boxes.
+        Generate a segmentation mask from bounding boxes.
+
         Args:
-            image (Image.Image): Input image.
-            bboxes (list): List of bounding boxes.
+            image: Input image.
+            bboxes: Bounding boxes in [x1, y1, x2, y2] format.
+
         Returns:
-            np.ndarray: Segmentation mask.
+            Segmentation mask as a numpy array.
         """
         if self.model is None:
             raise RuntimeError("SAM Model not loaded.")
-        if not bboxes:
+        if bboxes.nelement() == 0:
             return np.zeros((image.height, image.width), dtype=np.uint8)
+
         results = self.model(image, bboxes=bboxes, verbose=False)
         if not results or not results[0].masks:
             return np.zeros((image.height, image.width), dtype=np.uint8)
+
         final_mask = np.zeros((image.height, image.width), dtype=np.uint8)
         for mask_data in results[0].masks.data:
             final_mask = np.maximum(final_mask, mask_data.cpu().numpy().astype(np.uint8) * 255)
         return final_mask
 
-_original_get_imports = dynamic_module_utils.get_imports
-def _patched_get_imports(filename: Union[str, os.PathLike]) -> list[str]:
-    """
-    Patch to remove 'flash_attn' import for Florence-2 compatibility.
-    """
-    imports = _original_get_imports(filename)
-    if str(filename).endswith("/modeling_florence2.py"):
-        if "flash_attn" in imports:
-            imports.remove("flash_attn")
-    return imports
 
-class FlorenceModel:
+class DinoSamGrounding:
     """
-    Wrapper for Florence-2 model for captioning and grounding.
+    Combines GroundingDINO and SAM for text-prompted segmentation.
     """
-    def __init__(self, device='cuda:0'):
+    def __init__(self, device: str = 'cuda:0') -> None:
+        """
+        Initialize the DinoSamGrounding pipeline.
+
+        Args:
+            device: Device to load models on.
+        """
+        if predict is None:
+            raise ImportError("GroundingDINO is not installed or accessible. Check setup.")
         self.device = device
-        self.model = None
-        self.processor = None
+        self.grounding_dino_model = None
+        self.sam_wrapper = SAMModel(device=device)
 
-    def load(self) -> None:
+    def load(
+        self,
+        config_path: str = "../GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py",
+        checkpoint_path: str = "../weights/groundingdino_swint_ogc.pth"
+    ) -> None:
         """
-        Loads the Florence-2 model and processor onto the specified device.
+        Load GroundingDINO and SAM models.
+
+        Args:
+            config_path: Path to GroundingDINO config.
+            checkpoint_path: Path to GroundingDINO checkpoint.
         """
-        print(f"Loading Florence-2 model onto {self.device}...")
-        model_id = 'microsoft/Florence-2-large'
-        with patch("transformers.dynamic_module_utils.get_imports", _patched_get_imports):
-            self.model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16, trust_remote_code=True).to(self.device)
-            self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-        print("Florence-2 model loaded.")
+        print("Loading GroundingDINO model...")
+        self.grounding_dino_model = load_model(config_path, checkpoint_path, device=self.device)
+        self.sam_wrapper.load()
+        print("GroundingDINO and SAM loaded successfully.")
 
     def release(self) -> None:
         """
-        Releases the Florence-2 model and processor, clearing GPU memory.
+        Release GroundingDINO and SAM models and free resources.
         """
-        print("Releasing Florence-2 model...")
-        del self.model, self.processor
-        self.model, self.processor = None, None
+        print("Releasing GroundingDINO and SAM models...")
+        if self.grounding_dino_model is not None:
+            del self.grounding_dino_model
+            self.grounding_dino_model = None
+        self.sam_wrapper.release()
         gc.collect()
         torch.cuda.empty_cache()
 
-    def run_inference(self, task: str, text_input: str, image: Image.Image) -> dict:
+    def generate_mask_from_text(
+        self,
+        image: Image.Image,
+        text_prompt: str,
+        box_threshold: float = 0.35,
+        text_threshold: float = 0.25
+    ) -> np.ndarray:
         """
-        Runs inference on the Florence-2 model.
-        Args:
-            task (str): Task prompt.
-            text_input (str): Additional text input.
-            image (Image.Image): Input image.
-        Returns:
-            dict: Model output.
-        """
-        if self.model is None:
-            raise RuntimeError("Florence-2 model not loaded.")
-        prompt = task if text_input is None else task + text_input
-        inputs = self.processor(text=prompt, images=image, return_tensors="pt").to(self.device, torch.float16)
-        generated_ids = self.model.generate(**inputs, max_new_tokens=1024, num_beams=3, do_sample=False)
-        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        return self.processor.post_process_generation(generated_text, task=task, image_size=image.size)
+        Generate a segmentation mask for objects matching a text prompt.
 
-    def get_caption(self, image: Image.Image) -> str:
-        """
-        Generates a detailed caption for an image.
         Args:
-            image (Image.Image): Input image.
-        Returns:
-            str: Generated caption.
-        """
-        try:
-            results = self.run_inference('<MORE_DETAILED_CAPTION>', None, image)
-            return results.get('<MORE_DETAILED_CAPTION>', ["a furnished room"])[0]
-        except Exception:
-            return "a furnished room"
+            image: Input image.
+            text_prompt: Text prompt for object detection.
+            box_threshold: Box confidence threshold.
+            text_threshold: Text confidence threshold.
 
-    def get_grounded_bboxes(self, image: Image.Image, caption: str) -> list:
-        """
-        Finds bounding boxes for phrases in a caption.
-        Args:
-            image (Image.Image): Input image.
-            caption (str): Caption text.
         Returns:
-            list: List of bounding boxes.
+            Segmentation mask as a numpy array.
         """
-        try:
-            results = self.run_inference('<CAPTION_TO_PHRASE_GROUNDING>', caption, image)
-            grounding_results = results.get('<CAPTION_TO_PHRASE_GROUNDING>', {})
-            all_bboxes = []
-            if 'bboxes' in grounding_results:
-                all_bboxes.extend(grounding_results['bboxes'])
-            for entry in grounding_results.get('labels', []):
-                if isinstance(entry, dict) and 'bboxes' in entry:
-                    all_bboxes.extend(entry['bboxes'])
-            valid_bboxes = [box for box in all_bboxes if box[2] > box[0] and box[3] > box[1]]
-            return valid_bboxes
-        except Exception:
-            return []
+        if self.grounding_dino_model is None:
+            raise RuntimeError("Models not loaded. Call .load() first.")
 
-def get_grounded_mask(
-    florence_wrapper: FlorenceModel,
-    sam_wrapper: SAMModel,
-    image: Image.Image
-) -> tuple[np.ndarray, str]:
-    """
-    Grounding pipeline: generates a mask and caption for an image.
-    Args:
-        florence_wrapper (FlorenceModel): Florence-2 model wrapper.
-        sam_wrapper (SAMModel): SAM model wrapper.
-        image (Image.Image): Input image.
-    Returns:
-        tuple[np.ndarray, str]: Segmentation mask and caption.
-    """
-    try:
-        caption = florence_wrapper.get_caption(image)
-        if not caption or caption == "a furnished room":
-            return np.zeros((image.height, image.width), dtype=np.uint8), "a furnished room"
-        bboxes = florence_wrapper.get_grounded_bboxes(image, caption)
-        if not bboxes:
-            return np.zeros((image.height, image.width), dtype=np.uint8), caption
-        mask = sam_wrapper.segment_from_boxes(image, bboxes)
+        transform = T.Compose(
+            [
+                T.RandomResize([800], max_size=1333),
+                T.ToTensor(),
+                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ]
+        )
+        image_tensor, _ = transform(image, None)
+
+        boxes_relative, logits, phrases = predict(
+            model=self.grounding_dino_model,
+            image=image_tensor,
+            caption=text_prompt,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            device=self.device
+        )
+
+        if boxes_relative.nelement() == 0:
+            print(f"Warning: GroundingDINO found no objects...")
+            return np.zeros((image.height, image.width), dtype=np.uint8)
+
+        print(f"GroundingDINO found {boxes_relative.shape[0]} objects: {phrases}")
+
+        H, W, _ = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR).shape
+        boxes_absolute = box_cxcywh_to_xyxy(x=boxes_relative, width=W, height=H)
+        boxes_absolute = boxes_absolute.to(self.device)
+
+        mask = self.sam_wrapper.segment_from_boxes(image, bboxes=boxes_absolute)
+
         if np.sum(mask) > 0:
-            mask = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=3)
-        return mask, caption
-    except Exception as e:
-        print(f"  > CRITICAL FAILURE during grounding pipeline. Error: {e}")
-        traceback.print_exc()
-        return np.zeros((image.height, image.width), dtype=np.uint8), "a furnished room"
+            kernel = np.ones((15, 15), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=3)
+
+        return mask

@@ -32,6 +32,3 @@ Thumbs.db
 
 # Logs
 *.log
-
-test.sh
-layout_generation.py
