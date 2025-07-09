@@ -42,7 +42,7 @@ def run_inference(args: argparse.Namespace) -> None:
     layout_generator: DinoSamGrounding = DinoSamGrounding(device=device)
     layout_generator.load()
 
-    empty_image: Image.Image = Image.open(args.input_image).convert("RGB").resize((512, 512))
+    empty_image: Image.Image = Image.open(args.input_image).convert("RGB").resize((1024, 1024))
     canny_image_np: np.ndarray = cv2.Canny(np.array(empty_image), 100, 200)
     canny_image: Image.Image = Image.fromarray(canny_image_np)
     depth_map = depth_estimator(empty_image)['depth']
@@ -56,7 +56,7 @@ def run_inference(args: argparse.Namespace) -> None:
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
         image=empty_image,
-        mask_image=Image.new('L', (512, 512), 255),
+        mask_image=Image.new('L', (1024, 1024), 255),
         control_image=control_images,
         controlnet_conditioning_scale=controlnet_conditioning_scale,
         num_inference_steps=30,
