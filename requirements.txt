@@ -10,6 +10,7 @@ numpy==1.26.4
 Pillow==10.2.0
 tqdm==4.66.2
 einops
+gradio==4.26.0 
 xformers==0.0.26.post1
 peft==0.10.0
 huggingface-hub==0.25.2
