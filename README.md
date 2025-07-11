@@ -28,13 +28,14 @@ Creating accurate masks for training is crucial. We employ a robust pipeline tha
 2. **Text-Guided Masking:** Grounding DINO, a specialized object detection model, is used to identify and locate objects (like sofas, tables, chairs) within the generated pseudo-staged image based on text prompts (e.g., "sofa . table . chair").
 3. **Pixel-Perfect Segmentation:** The bounding boxes provided by Grounding DINO are then fed to SAM (Segment Anything Model), which generates precise, pixel-level masks for each detected object. These masks form the high-quality training data.
 
-### 2. Training Strategy: Two-Phase Learning for Control
+### 2. Training Strategy: Single-Phase ControlNet Training with LoRA Fine-tuning
 
-We use a two-phase training strategy to build a highly effective ControlNet:
+We employ a single-phase training strategy for our ControlNet, focusing on fine-tuning a pre-trained ControlNet model with an integrated LoRA. This approach leverages existing powerful models and adapts them to our specific virtual staging task.
 
-1. **Unpaired Pre-training :** The ControlNet is first trained on a large dataset of *staged room images* (without paired empty rooms). This phase teaches the model a broad visual vocabulary of furniture styles, lighting, textures, and realistic interior aesthetics. It learns "what good staging looks like" in general.
-2. **Paired Fine-tuning :** The pre-trained ControlNet is then fine-tuned on a dataset of *paired empty room and staged room images*. This phase teaches the model the critical skill of applying its learned artistic knowledge while strictly adhering to the structure, walls, windows, and lighting of the original empty room.
+1.  **ControlNet Fine-tuning with Pre-trained LoRA:**
+    The core of our training involves taking a pre-trained ControlNet model (e.g., for inpainting) and fine-tuning its weights on our prepared paired dataset. Crucially, this process also integrates and fine-tunes a pre-trained LoRA (Low-Rank Adaptation) model. The base ControlNet provides structural guidance, while the LoRA injects the desired stylistic and aesthetic qualities (e.g., specific furniture styles, lighting moods, or artistic filters) learned from a separate dataset. This allows the model to learn how to apply the LoRA's style while respecting the structural constraints provided by the ControlNet and the input conditioning image.
 
+    This consolidated fine-tuning phase directly trains the model to understand how to render staged rooms based on the provided structural cues (agnostic image) and the desired stylistic essence from the LoRA, all while aiming for realistic and complete furniture arrangements.
 ### 3. Inference: Single-Pass Structural Integrity
 
 The inference process focuses on delivering a final, high-quality staged image directly, without intermediate unreliable steps.
