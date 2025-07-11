@@ -12,14 +12,16 @@ import traceback
 import torch
 import torch.distributed as dist
 
-from layout_generator import SAMModel, FlorenceModel, get_grounded_mask
+from layout_generator import DinoSamGrounding, get_grounded_mask
 from constants import STAGED, EMPTY, AGNOSTIC, MASK, CAPTION
 
 def main(args, rank: int, world_size: int, device: str) -> None:
     """
     Prepares data for virtual staging by generating masks, captions, and agnostic images
-    using Florence and SAM models. Handles both paired and unpaired images, supports
+    using GroundingDINO and SAM models. Handles both paired and unpaired images, supports
     distributed processing, and saves processed data and metadata to output directory.
+    This version replaces the Florence-based approach with GroundingDINO to create
+    more robust and complete masks for furniture.
 
     Args:
         args: Parsed command-line arguments.
@@ -31,11 +33,19 @@ def main(args, rank: int, world_size: int, device: str) -> None:
     """
     is_main_process = (rank == 0)
 
-    sam_wrapper = SAMModel(device=device)
-    florence_wrapper = FlorenceModel(device=device)
-    sam_wrapper.load()
-    florence_wrapper.load()
-    
+    try:
+        grounding_pipeline = DinoSamGrounding(device=device)
+        grounding_pipeline.load(
+            config_path=args.dino_config,
+            checkpoint_path=args.dino_checkpoint
+        )
+    except Exception as e:
+        print(f"GPU {rank} FATAL: Could not initialize or load GroundingDINO/SAM models. Error: {e}")
+        print("Please ensure GroundingDINO is installed and model weights are available.")
+        traceback.print_exc()
+        if world_size > 1: dist.barrier()
+        return
+
     all_files_to_process = []
     if is_main_process:
         paired_files = glob.glob(os.path.join(args.paired_dir, f"*_{STAGED}.png"))
@@ -59,7 +69,8 @@ def main(args, rank: int, world_size: int, device: str) -> None:
         staged_path = info['path']
         try:
             staged_img_pil = Image.open(staged_path).convert("RGB")
-            mask, caption = get_grounded_mask(florence_wrapper, sam_wrapper, staged_img_pil)
+            
+            mask, caption = get_grounded_mask(grounding_pipeline, staged_img_pil, False)
 
             if np.sum(mask) == 0:
                 print(f"Warning: No mask generated for {os.path.basename(staged_path)}. Skipping file.")
@@ -100,28 +111,34 @@ def main(args, rank: int, world_size: int, device: str) -> None:
             print(f"GPU {rank} CRITICAL ERROR on {os.path.basename(staged_path)}: {e}")
             traceback.print_exc()
             continue
+    
+    grounding_pipeline.release()
 
     all_processed_items = [None] * world_size if world_size > 1 else [processed_items]
     if world_size > 1:
+        dist.barrier()
         dist.all_gather_object(all_processed_items, processed_items)
 
     if is_main_process:
         print("\nMain process gathering and finalizing results...")
         final_paired, final_unpaired = [], []
-        for sublist in all_processed_items:
-            for item in sublist:
-                if item['type'] == 'paired':
-                    final_paired.append(item)
-                else:
-                    final_unpaired.append(item)
+        all_items_flat = [item for sublist in all_processed_items if sublist is not None for item in sublist]
+
+        for item in all_items_flat:
+            if item['type'] == 'paired':
+                final_paired.append(item)
+            else:
+                final_unpaired.append(item)
         
         if final_paired:
             eval_count = min(50, len(final_paired) // 10) if len(final_paired) > 50 else 0
             eval_list, train_list = final_paired[:eval_count], final_paired[eval_count:]
-            with open(os.path.join(args.output_dir, 'paired_eval_datalist.json'), 'w') as f:
-                json.dump(eval_list, f, indent=4)
-            with open(os.path.join(args.output_dir, 'paired_train_datalist.json'), 'w') as f:
-                json.dump(train_list, f, indent=4)
+            if eval_list:
+                with open(os.path.join(args.output_dir, 'paired_eval_datalist.json'), 'w') as f:
+                    json.dump(eval_list, f, indent=4)
+            if train_list:
+                with open(os.path.join(args.output_dir, 'paired_train_datalist.json'), 'w') as f:
+                    json.dump(train_list, f, indent=4)
             print(f"\nSuccessfully processed {len(final_paired)} paired items.")
         if final_unpaired:
             with open(os.path.join(args.output_dir, 'unpaired_train_datalist.json'), 'w') as f:
@@ -129,14 +146,16 @@ def main(args, rank: int, world_size: int, device: str) -> None:
             print(f"Successfully processed {len(final_unpaired)} unpaired items.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare data with the Grounding pipeline.")
+    parser = argparse.ArgumentParser(description="Prepare data with the GroundingDINO+SAM pipeline.")
     parser.add_argument("--paired_dir", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--unpaired_dir", type=str, default=None)
+    parser.add_argument("--dino_config", type=str, default="GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py", help="Path to GroundingDINO config file.")
+    parser.add_argument("--dino_checkpoint", type=str, default="groundingdino_swint_ogc.pth", help="Path to GroundingDINO checkpoint file.")
     args = parser.parse_args()
 
     rank, world_size, device = 0, 1, 'cuda:0'
-    is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+    is_distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
     
     if is_distributed:
         dist.init_process_group("nccl")

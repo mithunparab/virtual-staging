@@ -7,7 +7,6 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 import argparse
 import random
 
-
 from dataset import VirtualStagingDataset
 
 def set_seed(seed: int = 42) -> None:

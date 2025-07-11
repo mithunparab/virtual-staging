@@ -21,7 +21,7 @@ def run_inference(args: argparse.Namespace) -> None:
     """
     os.makedirs(args.output_dir, exist_ok=True)
     device: str = "cuda"
-
+    LORA_MODEL_REPO = args.lora_path
     controlnet_inpaint: ControlNetModel = ControlNetModel.from_pretrained(args.controlnet_path, torch_dtype=torch.float16)
     controlnet_canny: ControlNetModel = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_canny", torch_dtype=torch.float16)
     controlnet_depth: ControlNetModel = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-depth", torch_dtype=torch.float16)
@@ -33,6 +33,16 @@ def run_inference(args: argparse.Namespace) -> None:
         safety_checker=None
     ).to(device)
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+    
+    try:
+        pipeline.load_lora_weights(
+            LORA_MODEL_REPO,
+            subfolder="checkpoint-3000",
+            weight_name="pytorch_lora_weights.safetensors"
+        )
+    except Exception as e:
+        print(f"Error loading LoRA weights: {e}")
+    
     try:
         pipeline.enable_xformers_memory_efficient_attention()
     except Exception:
@@ -104,6 +114,7 @@ def run_inference(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run robust inference for virtual staging.")
     parser.add_argument("--controlnet_path", type=str, required=True, help="Path to the ControlNet inpaint model.")
+    parser.add_argument("--lora_path", type=str, required=True, default="Nightfury16/virtual-staging-lora-sd-v1-5",help="Path to the LoRA model.")
     parser.add_argument("--input_image", type=str, required=True, help="Path to the input image.")
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/inference_output", help="Directory to save outputs.")
     parser.add_argument("--prompt", type=str, required=True, help="Prompt for image generation.")
